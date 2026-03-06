@@ -17,6 +17,11 @@ internal static class SetupStreamingAssets
         {
             return;
         }
+        if (!Directory.Exists(Application.streamingAssetsPath))
+        {
+            Debug.Log($"Create {Application.streamingAssetsPath}");
+            Directory.CreateDirectory(Application.streamingAssetsPath);
+        }
         foreach (var from in Directory.EnumerateFiles(dataFolder))
         {
             var to = Application.streamingAssetsPath + '/' + Path.GetFileName(from);

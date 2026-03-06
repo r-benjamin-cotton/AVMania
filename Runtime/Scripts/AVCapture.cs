@@ -698,6 +698,27 @@ namespace AVMania
             PrepareAudioTracks(trackIndex);
             videoTrackStates[trackIndex].onTextureUpdate = onTextureUpdate;
         }
+
+        public bool IsStartedVideo => videoDevice >= 0;
+        public bool IsStartedAudio => audioDevice >= 0;
+        public bool IsPreparedAudioTrack(int trackIndex)
+        {
+            var track = unchecked((uint)trackIndex);
+            if (!IsValidAudioTrack(track) || !preparedAudio)
+            {
+                return false;
+            }
+            return true;
+        }
+        public bool IsPreparedVideo(int trackIndex)
+        {
+            var track = unchecked((uint)trackIndex);
+            if (!IsValidVideoTrack(track) || !preparedVideo)
+            {
+                return false;
+            }
+            return true;
+        }
         public bool GetTextureInfo(int trackIndex, out TextureInfo info)
         {
             var track = unchecked((uint)trackIndex);
@@ -931,24 +952,24 @@ namespace AVMania
             }
         }
 
-        private void StartAudioCapture()
+        private bool StartAudioCapture()
         {
             var dev = audioSettings.deviceIndex;
             if (dev < 0)
             {
-                return;
+                return true;
             }
             var dct = AVMania.AVCaptureGetAudioDeviceCount();
             if (dev >= (int)dct)
             {
                 AVMania.LogWarning($"Invalid audio device index: {dev}/{dct}");
-                return;
+                return true;
             }
             var tct = AVMania.AVCaptureGetAudioStreamCount((uint)dev);
             if (tct == 0)
             {
                 AVMania.LogWarning("no valid tracks");
-                return;
+                return true;
             }
 
             audioDevice = dev;
@@ -970,27 +991,32 @@ namespace AVMania
             }
             ApplyVolume();
             ApplyPitch();
-            AVMania.AVCaptureStartAudio((uint)dev);
+            if (!AVMania.AVCaptureStartAudio((uint)dev))
+            {
+                audioDevice = -1;
+                return false;
+            }
             setting = true;
+            return true;
         }
-        private void StartVideoCapture()
+        private bool StartVideoCapture()
         {
             var dev = videoSettings.deviceIndex;
             if (dev < 0)
             {
-                return;
+                return true;
             }
             var dct = AVMania.AVCaptureGetVideoDeviceCount();
             if (dev >= (int)dct)
             {
                 AVMania.LogWarning($"Invalid video device index: {dev}/{dct}");
-                return;
+                return true;
             }
             var tct = AVMania.AVCaptureGetVideoStreamCount((uint)dev);
             if (tct == 0)
             {
                 AVMania.LogWarning("no valid tracks");
-                return;
+                return true;
             }
             videoDevice = dev;
             videoTrackCount = tct;
@@ -1018,8 +1044,13 @@ namespace AVMania
                     AVMania.AVCaptureSetupVideoStream((uint)dev, i, false, VideoFormat.Void, 0, 0, 0);
                 }
             }
-            AVMania.AVCaptureStartVideo((uint)dev);
+            if (!AVMania.AVCaptureStartVideo((uint)dev))
+            {
+                videoDevice = -1;
+                return false;
+            }
             setting = true;
+            return true;
         }
         private void StopAudioCapture()
         {
@@ -1054,6 +1085,9 @@ namespace AVMania
             {
                 StopVideoCapture();
             }
+            ClearStates();
+            setting = false;
+            repaint = true;
         }
 
         private static Vector2 CalcTextureSize(float w, float h, AlphaSource alphaSource)
@@ -1327,6 +1361,26 @@ namespace AVMania
                 }
             }
         }
+        private void ClearStates()
+        {
+            if (videoTrackStates != null)
+            {
+                for (int i = 0, end = videoTrackStates.Length; i < end; i++)
+                {
+                    ref var state = ref videoTrackStates[i];
+                    state.attributes = default;
+                    state.info = default;
+                }
+            }
+            if (audioTrackStates != null)
+            {
+                for (int i = 0, end = audioTrackStates.Length; i < end; i++)
+                {
+                    ref var state = ref audioTrackStates[i];
+                    state.attributes = default;
+                }
+            }
+        }
         private void ReleaseStates()
         {
             if (videoTrackStates != null)
@@ -1515,10 +1569,23 @@ namespace AVMania
 
         private void BlitWhite(uint track)
         {
-            var rt = videoTrackStates[track].renderTexture;
+            ref var state = ref videoTrackStates[track];
+            var rt = state.renderTexture;
             if (rt == null)
             {
                 return;
+            }
+            if (state.textureOwner)
+            {
+                var width = 64;
+                var height = 64;
+                if ((rt.width != width) || (rt.height != height))
+                {
+                    rt.Release();
+                    rt.width = width;
+                    rt.height = height;
+                    rt.Create();
+                }
             }
             var tex = AVMania.whiteTexture;
             var reg = new Vector4(0, 0, 1, 1);
@@ -1529,7 +1596,7 @@ namespace AVMania
         private bool UpdateTexture()
         {
             var frameready = false;
-            var rep = repaint;
+            var rp = repaint;
             repaint = false;
             commandBuffer.Clear();
             var vt = preparedVideo ? videoTrackCount : 0;
@@ -1544,13 +1611,25 @@ namespace AVMania
                 {
                     UpdateFrame(i);
                     frameready = true;
+                    rp = true;
                 }
-                if (df || rep)
+                ref var info = ref videoTrackStates[i].info;
+                if (info.videoFormat != VideoFormat.Void)
                 {
-                    BlitFrame(i);
+                    if (rp)
+                    {
+                        BlitFrame(i);
+                    }
+                }
+                else
+                {
+                    if (rp)
+                    {
+                        BlitWhite(i);
+                    }
                 }
             }
-            if (rep)
+            if (rp)
             {
                 for (uint i = vt, end = (uint)videoTracks.Length; i < end; i++)
                 {
@@ -1610,11 +1689,22 @@ namespace AVMania
                     startCapture = false;
                     if (audioSettings.enabled && (audioDevice < 0))
                     {
-                        StartAudioCapture();
+                        if (!StartAudioCapture())
+                        {
+                            startCapture = true;
+                        }
                     }
                     if (videoSettings.enabled && (videoDevice < 0))
                     {
-                        StartVideoCapture();
+                        if (!StartVideoCapture())
+                        {
+                            startCapture = true;
+                        }
+                    }
+                    if (startCapture)
+                    {
+                        yield return null;
+                        continue;
                     }
                 }
                 if (setting)
@@ -1706,6 +1796,7 @@ namespace AVMania
         private void OnDisable()
         {
             StopCapture();
+            UpdateTexture();
             StopCoroutine(coroutine);
             coroutine = null;
         }

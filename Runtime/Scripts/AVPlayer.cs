@@ -986,6 +986,7 @@ namespace AVMania
                 id = InvalidID;
             }
             starting = false;
+            ClearStates();
             currentUrl = "";
             videoTrackCount = 0;
             audioTrackCount = 0;
@@ -1370,10 +1371,6 @@ namespace AVMania
                     {
                         AVMania.AVPlayerGetVideoAttributes(id, i, out videoTrackStates[i].attributes);
                     }
-                    else
-                    {
-                        videoTrackStates[i].attributes = default;
-                    }
                 }
             }
             {
@@ -1387,10 +1384,6 @@ namespace AVMania
                     if (enabled)
                     {
                         AVMania.AVPlayerGetAudioAttributes(id, i, out audioTrackStates[i].attributes);
-                    }
-                    else
-                    {
-                        audioTrackStates[i].attributes = default;
                     }
                 }
             }
@@ -1673,6 +1666,26 @@ namespace AVMania
                 }
             }
         }
+        private void ClearStates()
+        {
+            if (videoTrackStates != null)
+            {
+                for (int i = 0, end = videoTrackStates.Length; i < end; i++)
+                {
+                    ref var state = ref videoTrackStates[i];
+                    state.attributes = default;
+                    state.info = default;
+                }
+            }
+            if (audioTrackStates != null)
+            {
+                for (int i = 0, end = audioTrackStates.Length; i < end; i++)
+                {
+                    ref var state = ref audioTrackStates[i];
+                    state.attributes = default;
+                }
+            }
+        }
         private void ReleaseStates()
         {
             if (videoTrackStates != null)
@@ -1874,13 +1887,13 @@ namespace AVMania
         }
         private void BlitFrame(uint track)
         {
-            ref var conf = ref videoTracks[track];
             ref var state = ref videoTrackStates[track];
             var rt = state.renderTexture;
             if (rt == null)
             {
                 return;
             }
+            ref var conf = ref videoTracks[track];
             ref var info = ref state.info;
             var tex = state.texture;
             var reg = state.region;
@@ -1961,10 +1974,23 @@ namespace AVMania
         }
         private void BlitWhite(uint track)
         {
-            var rt = videoTrackStates[track].renderTexture;
+            ref var state = ref videoTrackStates[track];
+            var rt = state.renderTexture;
             if (rt == null)
             {
                 return;
+            }
+            if (state.textureOwner)
+            {
+                var width = 64;
+                var height = 64;
+                if ((rt.width != width) || (rt.height != height))
+                {
+                    rt.Release();
+                    rt.width = width;
+                    rt.height = height;
+                    rt.Create();
+                }
             }
             var tex = AVMania.whiteTexture;
             var reg = new Vector4(0, 0, 1, 1);
@@ -1974,7 +2000,7 @@ namespace AVMania
         }
         private void UpdateTexture()
         {
-            var rep = repaint;
+            var rp = repaint;
             repaint = false;
             commandBuffer.Clear();
             var vt = (IsPrepared && (IsPlaying || IsPaused)) ? videoTrackCount : 0;
@@ -1988,13 +2014,25 @@ namespace AVMania
                 if (df)
                 {
                     UpdateFrame(i);
+                    rp = true;
                 }
-                if (df || rep)
+                ref var info = ref videoTrackStates[i].info;
+                if (info.videoFormat != VideoFormat.Void)
                 {
-                    BlitFrame(i);
+                    if (rp)
+                    {
+                        BlitFrame(i);
+                    }
+                }
+                else
+                {
+                    if (rp)
+                    {
+                        BlitWhite(i);
+                    }
                 }
             }
-            if (rep)
+            if (rp)
             {
                 for (uint i = vt, end = (uint)videoTracks.Length; i < end; i++)
                 {
@@ -2214,6 +2252,7 @@ namespace AVMania
         {
             //AVMania.Log("OnDisable");
             Close();
+            UpdateTexture();
             StopCoroutine(coroutine);
             coroutine = null;
         }
