@@ -1,0 +1,26 @@
+﻿{
+    "name": "com.r-benjamin-cotton.avmania",
+    "displayName": "AVMania",
+    "version": "1.0.0-preview.1",
+    "description": "AVMania",
+    "unity": "2022.3",
+    "unityRelease": "15f1",
+    "dependencies": {
+        "com.unity.timeline": "1.7.7"
+    },
+    "keywords": [
+        "audio",
+        "video"
+    ],
+    "samples": [
+        {
+            "displayName": "AVMania Sample",
+            "description": "AVMania Sample.",
+            "path": "Samples~"
+        }
+    ],
+    "author": {
+        "name": "r.benjamin.cotton",
+        "url": "https://r-benjamin-cotton.github.io/"
+    }
+}
