@@ -221,6 +221,10 @@ namespace AVMania
     [StructLayout(LayoutKind.Sequential, Pack = 8)]
     public struct VideoAttributes
     {
+        public int offsetX;
+        public int offsetY;
+        public int areaX;
+        public int areaY;
         public uint width;
         public uint height;
         public uint frameRateNumerator;
@@ -236,8 +240,7 @@ namespace AVMania
         {
             var fps = (frameRateDenominator == 0) ? 0.0f : ((float)frameRateNumerator / frameRateDenominator);
             var aspect = (aspectRatioDenominator == 0) ? 0.0f : ((float)aspectRatioNumerator / aspectRatioDenominator);
-            //var str = $"size:{width}x{height} frameRate:{fps} aspectRatio:{aspect} videoFormat:{videoFormat} yuvMatrix:{yuvMatrix} chromaSiting:{chromaSiting} nominalRange:{nominalRange} transferFunction:{transferFunction}";
-            var str = $"size:{width}x{height} frameRate:{fps} aspectRatio:{aspect} videoFormat:{videoFormat} yuvMatrix:{yuvMatrix} nominalRange:{nominalRange} transferFunction:{transferFunction}";
+            var str = $"size:{width}x{height} area:{offsetX},{offsetY},{areaX},{areaY} frameRate:{fps} aspectRatio:{aspect} videoFormat:{videoFormat} yuvMatrix:{yuvMatrix} nominalRange:{nominalRange} transferFunction:{transferFunction}";
             return str;
         }
     };
@@ -254,27 +257,6 @@ namespace AVMania
         }
     };
 
-    [StructLayout(LayoutKind.Sequential, Pack = 8)]
-    public struct TextureInfo
-    {
-        public uint width;
-        public uint height;
-        public uint texWidth;
-        public uint texHeight;
-        public uint bpp;
-        public VideoFormat videoFormat;
-        public YUVMatrix yuvMatrix;
-        public ChromaSiting chromaSiting;
-        public NominalRange nominalRange;
-        public TransferFunction transferFunction;
-        public override readonly string ToString()
-        {
-            //var str = $"size:{width}x{height} texSize:{texWidth}x{texHeight} bpp:{bpp} videoFormat:{videoFormat} yuvMatrix:{yuvMatrix} chromaSiting:{chromaSiting} nominalRange:{nominalRange} transferFunction:{transferFunction}";
-            var str = $"size:{width}x{height} texSize:{texWidth}x{texHeight} bpp:{bpp} videoFormat:{videoFormat} yuvMatrix:{yuvMatrix} nominalRange:{nominalRange} transferFunction:{transferFunction}";
-            return str;
-        }
-    };
-
     internal static class AVMania
     {
         [Flags]
@@ -286,6 +268,7 @@ namespace AVMania
             Seeking = 1U << 3,
             Paused = 1U << 4,
             FrameReady = 1U << 8,
+            TypeChanged = 1U << 9,
             Invalid = 1U << 31,
         };
 
@@ -303,6 +286,7 @@ namespace AVMania
             Failed = 1U << 0,
             Active = 1U << 1,
             FrameReady = 1U << 8,
+            TypeChanged = 1U << 9,
             Invalid = 1U << 31,
         };
 
@@ -351,8 +335,6 @@ namespace AVMania
         internal static extern bool AVPlayerGetVideoAttributes(uint id, uint track, out VideoAttributes attr);
         [DllImport("AVMania")]
         internal static extern bool AVPlayerIsFrameReady(uint id, uint track);
-        [DllImport("AVMania")]
-        internal static extern bool AVPlayerGetTextureInfo(uint id, uint track, out TextureInfo info);
         [DllImport("AVMania")]
         internal static extern uint AVPlayerGetTextureUpdateId(uint id, uint track);
         [DllImport("AVMania")]
@@ -445,8 +427,6 @@ namespace AVMania
         [DllImport("AVMania")]
         internal static extern bool AVCaptureIsFrameReady(uint device, uint stream);
         [DllImport("AVMania")]
-        internal static extern bool AVCaptureGetTextureInfo(uint device, uint stream, out TextureInfo info);
-        [DllImport("AVMania")]
         internal static extern IntPtr AVCaptureLockImage(uint device, uint stream, uint width, uint height, uint bpp);
         [DllImport("AVMania")]
         internal static extern void AVCaptureUnlockImage(uint device, uint stream);
@@ -483,6 +463,40 @@ namespace AVMania
                 case VideoFormat.RGB32:
                 case VideoFormat.ARGB32:
                     return TextureFormat.RGBA32;
+            }
+        }
+        internal static int GetTextureSize(VideoAttributes attr, out int texWidth, out int texHeight)
+        {
+            switch (attr.videoFormat)
+            {
+                default:
+                case VideoFormat.Void:
+                    texWidth = 0;
+                    texHeight = 0;
+                    return 0;
+                case VideoFormat.L8:
+                    texWidth = (int)attr.width;
+                    texHeight = (int)attr.height;
+                    return 1;
+                case VideoFormat.L16:
+                case VideoFormat.D16:
+                    texWidth = (int)attr.width;
+                    texHeight = (int)attr.height;
+                    return 2;
+                case VideoFormat.NV12:
+                    texWidth = (int)attr.width;
+                    texHeight = (int)attr.height * 3 / 2;
+                    return 1;
+                case VideoFormat.YUY2:
+                    texWidth = (int)attr.width;
+                    texHeight = (int)attr.height;
+                    return 2;
+                case VideoFormat.AYUV:
+                case VideoFormat.RGB32:
+                case VideoFormat.ARGB32:
+                    texWidth = (int)attr.width;
+                    texHeight = (int)attr.height;
+                    return 4;
             }
         }
         internal static BlitFormat GetBlitFormat(VideoFormat videoFormat)

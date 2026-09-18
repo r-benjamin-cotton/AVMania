@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
@@ -78,8 +79,7 @@ namespace AVMania
 
         private struct VideoTrackState
         {
-            public VideoAttributes attributes;
-            public TextureInfo info;
+            public VideoAttributes attr;
             public bool textureOwner;
             public Texture2D texture;
             public Vector4 region;
@@ -92,7 +92,7 @@ namespace AVMania
         }
         private struct AudioTrackState
         {
-            public AudioAttributes attributes;
+            public AudioAttributes attr;
             public AudioRoute activeRoute;
             public OnAudioUpdateDelegate onAudioUpdate;
         }
@@ -117,10 +117,10 @@ namespace AVMania
         private IntPtr textureUpdateCallback = IntPtr.Zero;
 
         private static readonly int _Color = Shader.PropertyToID("_Color");
-        private static readonly int _MainTex_TexelRegion = Shader.PropertyToID("_MainTex_TexelRegion");
         private static readonly int _Chromakey = Shader.PropertyToID("_Chromakey");
         private static readonly int _ChromakeyLab = Shader.PropertyToID("_ChromakeyLab");
         private static readonly int _ChromakeyParam = Shader.PropertyToID("_ChromakeyParam");
+        private static readonly int _MainTex_TexelRegion = Shader.PropertyToID("_MainTex_TexelRegion");
         private static readonly int _Track = Shader.PropertyToID("_Track");
         private static readonly int _Track_TexelRegion = Shader.PropertyToID("_Track_TexelRegion");
 
@@ -719,17 +719,6 @@ namespace AVMania
             }
             return true;
         }
-        public bool GetTextureInfo(int trackIndex, out TextureInfo info)
-        {
-            var track = unchecked((uint)trackIndex);
-            if (!IsValidVideoTrack(track) || !preparedVideo)
-            {
-                info = default;
-                return false;
-            }
-            info = videoTrackStates[track].info;
-            return true;
-        }
 
         public bool GetVideoAttributes(int trackIndex, out VideoAttributes attributes)
         {
@@ -739,7 +728,7 @@ namespace AVMania
                 attributes = default;
                 return false;
             }
-            attributes = videoTrackStates[track].attributes;
+            attributes = videoTrackStates[track].attr;
             return true;
         }
         public bool GetAudioAttributes(int trackIndex, out AudioAttributes attributes)
@@ -750,7 +739,7 @@ namespace AVMania
                 attributes = default;
                 return false;
             }
-            attributes = audioTrackStates[track].attributes;
+            attributes = audioTrackStates[track].attr;
             return true;
         }
         public Texture2D GetRawTexture(int trackIndex)
@@ -1126,12 +1115,12 @@ namespace AVMania
                 return;
             }
             ref var state = ref videoTrackStates[track];
-            ref var attributes = ref state.attributes;
-            var width = attributes.width;
-            var height = attributes.height;
+            ref var attr = ref state.attr;
+            var width = attr.areaX;
+            var height = attr.areaY;
             var size = CalcTextureSize(width, height, conf.alphaSource);
-            var aspectNum = (float)attributes.aspectRatioNumerator;
-            var aspectDen = (float)attributes.aspectRatioDenominator;
+            var aspectNum = (float)attr.aspectRatioNumerator;
+            var aspectDen = (float)attr.aspectRatioDenominator;
             var aspect = (aspectDen == 0) ? 1.0f : ((float)aspectNum / aspectDen);
             var ax = size.x / size.y * aspect;
             if ((state.originalRendererScale == Vector3.zero) || (state.previousRendererScale != targetRenderer.transform.localScale))
@@ -1191,12 +1180,12 @@ namespace AVMania
                 return;
             }
             ref var state = ref videoTrackStates[track];
-            ref var attributes = ref state.attributes;
-            var width = attributes.width;
-            var height = attributes.height;
+            ref var attr = ref state.attr;
+            var width = attr.areaX;
+            var height = attr.areaY;
             var size = CalcTextureSize(width, height, conf.alphaSource);
-            var aspectNum = (float)attributes.aspectRatioNumerator;
-            var aspectDen = (float)attributes.aspectRatioDenominator;
+            var aspectNum = (float)attr.aspectRatioNumerator;
+            var aspectDen = (float)attr.aspectRatioDenominator;
             var aspect = (aspectDen == 0) ? 1.0f : ((float)aspectNum / aspectDen);
             var ax = size.x / size.y * aspect;
             var rect = targetRawImage.rectTransform.rect;
@@ -1245,6 +1234,42 @@ namespace AVMania
             var dt = sz - rect.size;
             targetRawImage.rectTransform.sizeDelta += dt;
         }
+
+        private void SetupTexture(uint track)
+        {
+            ref var state = ref videoTrackStates[track];
+            ref var attr = ref state.attr;
+            var width = attr.width;
+            var height = attr.height;
+            if ((width == 0) || (height == 0))
+            {
+                return;
+            }
+            state.region = new Vector4((float)attr.offsetX / width, attr.offsetY / height, (float)attr.areaX / width, (float)attr.areaY / height);
+            var bpp = AVMania.GetTextureSize(attr, out int texWidth, out int texHeight);
+            var tf = AVMania.GetTextureFormat(attr.videoFormat);
+            //AVMania.Log($"{texWidth}x{texHeight} {bpp} {attr.videoFormat} {tf}");
+            var tex = state.texture;
+            if ((tex != null) && (tex.format != tf))
+            {
+                AVMania.Destroy(tex);
+                tex = null;
+            }
+            if (tex == null)
+            {
+                tex = new Texture2D(texWidth, texHeight, tf, false, true);
+                tex.hideFlags = HideFlags.DontSave;
+                tex.wrapMode = TextureWrapMode.Clamp;
+                tex.filterMode = FilterMode.Point;
+                tex.name = "AVCapture";
+                state.texture = tex;
+            }
+            else if ((tex.width != texWidth) || (tex.height != texHeight))
+            {
+                tex.Reinitialize(texWidth, texHeight);
+                tex.Apply();
+            }
+        }
         private void SetupStates()
         {
             setting = false;
@@ -1255,12 +1280,23 @@ namespace AVMania
                 ref var state = ref videoTrackStates[i];
                 if (!conf.enabled)
                 {
+                    if (state.texture != null)
+                    {
+                        AVMania.Destroy(state.texture);
+                        state.texture = null;
+                    }
                     if (state.textureOwner)
                     {
                         state.textureOwner = false;
                         AVMania.Destroy(state.renderTexture);
+                        state.renderTexture = null;
                     }
                     continue;
+                }
+                if (videoDevice >= 0)
+                {
+                    AVMania.AVCaptureGetVideoAttributes((uint)videoDevice, (uint)i, out state.attr);
+                    SetupTexture((uint)i);
                 }
                 if (conf.targetRenderTexture != null)
                 {
@@ -1268,6 +1304,7 @@ namespace AVMania
                     {
                         state.textureOwner = false;
                         AVMania.Destroy(state.renderTexture);
+                        state.renderTexture = null;
                     }
                     if (!ReferenceEquals(state.renderTexture, conf.targetRenderTexture))
                     {
@@ -1280,8 +1317,8 @@ namespace AVMania
                     if (!state.textureOwner)
                     {
                         state.textureOwner = true;
-                        var width = Mathf.Max(64, state.attributes.width);
-                        var height = Mathf.Max(64, state.attributes.height);
+                        var width = Mathf.Max(64, state.attr.areaX);
+                        var height = Mathf.Max(64, state.attr.areaY);
                         var size = CalcTextureSize(width, height, conf.alphaSource);
                         state.renderTexture = new RenderTexture((int)size.x, (int)size.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
                         state.renderTexture.hideFlags = HideFlags.DontSave;
@@ -1316,6 +1353,10 @@ namespace AVMania
                     audioRoute = AudioRoute.None;
                 }
                 ref var state = ref audioTrackStates[i];
+                if ((audioDevice >= 0) && (audioRoute != AudioRoute.None))
+                {
+                    AVMania.AVCaptureGetAudioAttributes((uint)audioDevice, (uint)i, out state.attr);
+                }
                 if (audioRoute != state.activeRoute)
                 {
                     if (state.onAudioUpdate == null)
@@ -1368,8 +1409,7 @@ namespace AVMania
                 for (int i = 0, end = videoTrackStates.Length; i < end; i++)
                 {
                     ref var state = ref videoTrackStates[i];
-                    state.attributes = default;
-                    state.info = default;
+                    state.attr = default;
                 }
             }
             if (audioTrackStates != null)
@@ -1377,7 +1417,7 @@ namespace AVMania
                 for (int i = 0, end = audioTrackStates.Length; i < end; i++)
                 {
                     ref var state = ref audioTrackStates[i];
-                    state.attributes = default;
+                    state.attr = default;
                 }
             }
         }
@@ -1431,71 +1471,29 @@ namespace AVMania
             }
             audioTrackStates = null;
         }
-
         private void UpdateFrame(uint track)
         {
-            if (!AVMania.AVCaptureGetTextureInfo((uint)videoDevice, track, out TextureInfo info))
-            {
-                return;
-            }
-            //AVMania.Log($"updatetexture {actualWidth}x{actualHeight}");
-            ref var state = ref videoTrackStates[track];
-            state.info = info;
-            var tf = AVMania.GetTextureFormat(info.videoFormat);
-            var dr = false;
-            var tex = state.texture;
-            if ((tex != null) && (tex.format != tf))
-            {
-                AVMania.Destroy(tex);
-                tex = null;
-            }
-            if (tex == null)
-            {
-                tex = new Texture2D((int)info.texWidth, (int)info.texHeight, tf, false, true);
-                tex.hideFlags = HideFlags.DontSave;
-                tex.wrapMode = TextureWrapMode.Clamp;
-                tex.filterMode = FilterMode.Point;
-                tex.name = "AVCapture";
-                state.texture = tex;
-                dr = true;
-            }
-            else if ((tex.width != info.texWidth) || (tex.height != info.texHeight))
-            {
-                tex.Reinitialize((int)info.texWidth, (int)info.texHeight);
-                tex.Apply();
-                dr = true;
-            }
-            if (dr)
-            {
-                var width = info.width;
-                var height = info.height;
-                var region = new Vector4(0, 0, (float)width / info.width, (float)height / info.height);
-                state.region = region;
-            }
             var tid = AVMania.AVCaptureGetTextureUpdateId((uint)videoDevice, track);
             if (tid != 0)
             {
-                commandBuffer.IssuePluginCustomTextureUpdateV2(textureUpdateCallback, tex, tid);
+                ref var state = ref videoTrackStates[track];
+                commandBuffer.IssuePluginCustomTextureUpdateV2(textureUpdateCallback, state.texture, tid);
             }
         }
         private void BlitFrame(uint track)
         {
-            ref var conf = ref videoTracks[track];
             ref var state = ref videoTrackStates[track];
             var rt = state.renderTexture;
             if (rt == null)
             {
                 return;
             }
-            ref var info = ref state.info;
-            var tex = state.texture;
-            var reg = state.region;
-            var als = conf.alphaSource;
+            ref var conf = ref videoTracks[track];
+            ref var attr = ref state.attr;
             if (state.textureOwner)
             {
-                var width = info.width;
-                var height = info.height;
-                var size = CalcTextureSize(width, height, als);
+                var als = conf.alphaSource;
+                var size = CalcTextureSize(attr.areaX, attr.areaY, als);
                 if ((rt.width != size.x) || (rt.height != size.y))
                 {
                     rt.Release();
@@ -1506,16 +1504,19 @@ namespace AVMania
             }
             if (state.onTextureUpdate != null)
             {
+                var tex = state.texture;
                 state.onTextureUpdate.Invoke((int)track, commandBuffer, tex, rt);
             }
             else
             {
+                var als = conf.alphaSource;
+                var tex = state.texture;
                 if (tex == null)
                 {
                     tex = AVMania.whiteTexture;
                 }
                 commandBuffer.SetGlobalColor(_Color, conf.color * color);
-                commandBuffer.SetGlobalVector(_MainTex_TexelRegion, reg);
+                commandBuffer.SetGlobalVector(_MainTex_TexelRegion, state.region);
                 if (als == AlphaSource.Chromakey)
                 {
                     commandBuffer.SetGlobalVector(_Chromakey, conf.chromakey);
@@ -1537,21 +1538,20 @@ namespace AVMania
                     }
                     else
                     {
-                        var ntex = state.texture;
-                        var nreg = state.region;
+                        ref var nstate = ref videoTrackStates[alphaTrack];
+                        var ntex = nstate.texture;
                         if (ntex == null)
                         {
                             ntex = AVMania.whiteTexture;
                         }
                         commandBuffer.SetGlobalTexture(_Track, ntex);
-                        commandBuffer.SetGlobalVector(_Track_TexelRegion, nreg);
+                        commandBuffer.SetGlobalVector(_Track_TexelRegion, nstate.region);
                     }
                 }
-
-                var bf = LocakKeywordMap<BlitFormat>.Keyword(blitMaterial, AVMania.GetBlitFormat(info.videoFormat));
-                var nr = LocakKeywordMap<NominalRange>.Keyword(blitMaterial, info.nominalRange);
-                var tf = LocakKeywordMap<TransferFunction>.Keyword(blitMaterial, info.transferFunction);
-                var ym = LocakKeywordMap<YUVMatrix>.Keyword(blitMaterial, info.yuvMatrix);
+                var bf = LocakKeywordMap<BlitFormat>.Keyword(blitMaterial, AVMania.GetBlitFormat(attr.videoFormat));
+                var nr = LocakKeywordMap<NominalRange>.Keyword(blitMaterial, attr.nominalRange);
+                var tf = LocakKeywordMap<TransferFunction>.Keyword(blitMaterial, attr.transferFunction);
+                var ym = LocakKeywordMap<YUVMatrix>.Keyword(blitMaterial, attr.yuvMatrix);
                 var al = LocakKeywordMap<AlphaSource>.Keyword(blitMaterial, als);
                 commandBuffer.EnableKeyword(blitMaterial, bf);
                 commandBuffer.EnableKeyword(blitMaterial, nr);
@@ -1613,8 +1613,8 @@ namespace AVMania
                     frameready = true;
                     rp = true;
                 }
-                ref var info = ref videoTrackStates[i].info;
-                if (info.videoFormat != VideoFormat.Void)
+                ref var attr = ref videoTrackStates[i].attr;
+                if (attr.videoFormat != VideoFormat.Void)
                 {
                     if (rp)
                     {
@@ -1720,13 +1720,9 @@ namespace AVMania
                 {
                     var status = AVMania.AVCaptureGetAudioStatus((uint)audioDevice);
                     var active = (status & AVMania.AVCaptureState.Active) != 0;
-                    if (!preparedAudio && active)
+                    if (active && !preparedAudio)
                     {
                         preparedAudio = true;
-                        for (uint i = 0; i < audioTrackCount; i++)
-                        {
-                            AVMania.AVCaptureGetAudioAttributes((uint)audioDevice, i, out audioTrackStates[i].attributes);
-                        }
                         setting = true;
                     }
                 }
@@ -1734,13 +1730,10 @@ namespace AVMania
                 {
                     var status = AVMania.AVCaptureUpdateVideo((uint)videoDevice);
                     var active = (status & AVMania.AVCaptureState.Active) != 0;
-                    if (!preparedVideo && active)
+                    var changed = (status & AVMania.AVCaptureState.TypeChanged) != 0;
+                    if (active && (!preparedVideo || changed))
                     {
                         preparedVideo = true;
-                        for (uint i = 0; i < videoTrackCount; i++)
-                        {
-                            AVMania.AVCaptureGetVideoAttributes((uint)videoDevice, i, out videoTrackStates[i].attributes);
-                        }
                         setting = true;
                     }
                 }
